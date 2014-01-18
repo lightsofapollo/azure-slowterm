@@ -1,1 +1,67 @@
 #! /usr/bin/env node
+
+var argParse = require('optimist').
+      usage(
+        'Roundtrip stdin to azure and to stdout\n' +
+        'Usage: command | azure-slowterm'
+      ).
+      options('interval', {
+        alias: 'I',
+        default: 500,
+        describe: 'Polling interval for reading from azure'
+      });
+
+
+var argv = argParse.argv;
+
+if (argv.help) {
+  argParse.showHelp();
+  process.exit();
+}
+
+var azure = require('azure');
+var uuid = require('uuid');
+
+// writable
+var BlobStream = require('taskcluster-azure-blobstream');
+// readable
+var logStream = require('taskcluster-logstream');
+
+// Rely on azure's werid environment variables for now to auth...
+var blobService = azure.createBlobService();
+
+// no you can't change the name yet muwhaha
+var CONTAINER = 'slowterm';
+var PATH = uuid.v4();
+var URL = blobService.getBlobUrl(CONTAINER, PATH);
+
+// pause stdin
+process.stdin.pause();
+
+blobService.createContainerIfNotExists(
+  CONTAINER,
+  // list, get, etc... are public
+  { publicAccessLevel: 'container' },
+  function (err) {
+    if (err) {
+      console.error(err);
+      return process.exit(1);
+    }
+    initializePipes();
+  }
+)
+
+function initializePipes() {
+  var writer = new BlobStream(blobService, CONTAINER, PATH);
+  var reader = logStream(URL, {
+    intervalMS: parseInt(argv.interval, 10),
+    headers: { 'x-ms-version': '2013-08-15' }
+  });
+
+  process.stdin.resume();
+  // stdin goes to azure
+  process.stdin.pipe(writer);
+
+  // and then piped right back to stdout
+  reader.pipe(process.stdout);
+}
